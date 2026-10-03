@@ -1,0 +1,80 @@
+name: Terraform infrastructure
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Apply reviewed infrastructure plan (creates paid Azure resources)
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths: ['terraform/**', '.github/workflows/infra.yml']
+  pull_request:
+    paths: ['terraform/**']
+permissions:
+  contents: read
+concurrency:
+  group: wallet-terraform
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.5
+      - run: terraform fmt -check -recursive
+        working-directory: terraform
+      - run: terraform init -backend=false
+        working-directory: terraform
+      - run: terraform validate
+        working-directory: terraform
+  plan:
+    needs: validate
+    if: github.event_name != 'pull_request' && vars.AZURE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: infrastructure
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ARM_USE_OIDC: 'true'
+      ARM_USE_AZUREAD: 'true'
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_name: ${{ vars.AZURE_WEBAPP_NAME }}
+      TF_VAR_registry_name: ${{ vars.AZURE_REGISTRY_NAME }}
+      STATE_ACCOUNT: ${{ vars.TF_STATE_ACCOUNT }}
+      STATE_CONTAINER: ${{ vars.TF_STATE_CONTAINER }}
+      STATE_GROUP: ${{ vars.TF_STATE_RESOURCE_GROUP }}
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check required configuration
+        run: |
+          for name in ARM_CLIENT_ID ARM_TENANT_ID ARM_SUBSCRIPTION_ID TF_VAR_name TF_VAR_registry_name STATE_ACCOUNT STATE_CONTAINER STATE_GROUP; do
+            if [ -z "${!name}" ]; then echo "::error::Missing configuration: $name"; exit 1; fi
+          done
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.5
+      - run: terraform init -backend-config="resource_group_name=$STATE_GROUP" -backend-config="storage_account_name=$STATE_ACCOUNT" -backend-config="container_name=$STATE_CONTAINER" -backend-config="key=wallet.tfstate" -backend-config="use_azuread_auth=true"
+      - run: terraform validate
+      - run: terraform plan -input=false -out=wallet.tfplan
+      - name: Apply exact plan
+        if: github.event_name == 'workflow_dispatch' && inputs.apply
+        run: terraform apply -input=false wallet.tfplan
+      - name: Publish provisioned outputs
+        if: github.event_name == 'workflow_dispatch' && inputs.apply
+        run: |
+          echo '### Provisioned infrastructure' >> "$GITHUB_STEP_SUMMARY"
+          terraform output -json >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,13 @@
+.git
+.tools
+.local
+**/bin
+**/obj
+**/node_modules
+**/dist
+**/TestResults
+**/wwwroot
+**/*.db*
+**/.env*
+terraform
+docs

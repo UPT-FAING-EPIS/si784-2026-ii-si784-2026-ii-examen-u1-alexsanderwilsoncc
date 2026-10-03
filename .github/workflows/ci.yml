@@ -1,0 +1,47 @@
+name: CI
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['docs/**', '**/*.md']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: dotnet test backend/Wallet.sln -c Release --settings backend/coverage.runsettings --collect "XPlat Code Coverage" --results-directory TestResults
+      - run: npm ci && npm test && npm run build
+        working-directory: frontend
+      - run: node scripts/generate-docs.mjs
+      - run: git diff --exit-code -- docs
+      - run: docker build -t wallet-api ./backend/Wallet.Api
+      - run: docker build -t wallet-app .
+      - name: Container smoke test and persistence
+        run: |
+          docker volume create wallet-smoke
+          docker run -d --name wallet-smoke -p 8080:8080 -v wallet-smoke:/data wallet-app
+          trap 'docker rm -f wallet-smoke; docker volume rm wallet-smoke' EXIT
+          for i in {1..30}; do curl -fsS http://localhost:8080/health && break || sleep 2; done
+          curl -fsS http://localhost:8080/ | grep -q 'Moneda'
+          curl -fsS http://localhost:8080/swagger/v1/swagger.json > /dev/null
+          id=$(curl -fsS -H 'Content-Type: application/json' -d '{"customerName":"CI","customerEmail":"ci@example.com"}' http://localhost:8080/wallets | jq -r .id)
+          curl -fsS -H 'Content-Type: application/json' -d '{"amount":12.34}' "http://localhost:8080/wallets/$id/deposit"
+          docker restart wallet-smoke
+          for i in {1..30}; do curl -fsS http://localhost:8080/health && break || sleep 2; done
+          curl -fsS "http://localhost:8080/wallets/$id/balance" | jq -e '.balance == 12.34'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: TestResults

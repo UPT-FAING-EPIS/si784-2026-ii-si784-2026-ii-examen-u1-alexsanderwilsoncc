@@ -1,0 +1,91 @@
+name: Build and deploy wallet
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['docs/**', '**/*.md', 'terraform/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: wallet-deploy
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: dotnet test backend/Wallet.sln -c Release --settings backend/coverage.runsettings --collect "XPlat Code Coverage" --results-directory TestResults
+      - run: dotnet publish backend/Wallet.Api -c Release -o publish
+      - run: npm ci && npm test && npm run build
+        working-directory: frontend
+      - run: cp -r frontend/dist publish/wwwroot
+      - run: docker build -t wallet:${{ github.sha }} .
+      - run: docker save wallet:${{ github.sha }} | gzip > wallet-image.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wallet-image
+          path: wallet-image.tar.gz
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wallet-publish
+          path: publish/
+      - name: Deployment configuration status
+        if: vars.AZURE_ENABLED != 'true'
+        run: echo "Build completed. Azure deploy is disabled until credentials and infrastructure are configured; see terraform/README.md." >> "$GITHUB_STEP_SUMMARY"
+  deploy:
+    needs: build
+    if: vars.AZURE_ENABLED == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      REGISTRY: ${{ vars.AZURE_REGISTRY_NAME }}
+      APP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
+      RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      IMAGE_TAG: ${{ github.sha }}
+    steps:
+      - name: Validate deploy configuration
+        run: |
+          for name in REGISTRY APP_NAME RESOURCE_GROUP; do
+            if [ -z "${!name}" ]; then echo "::error::Missing configuration: $name"; exit 1; fi
+          done
+      - uses: actions/download-artifact@v4
+        with:
+          name: wallet-image
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Push immutable image and deploy
+        run: |
+          gzip -dc wallet-image.tar.gz | docker load
+          SERVER=$(az acr show --name "$REGISTRY" --query loginServer -o tsv)
+          az acr login --name "$REGISTRY"
+          docker tag "wallet:$IMAGE_TAG" "$SERVER/wallet:$IMAGE_TAG"
+          docker push "$SERVER/wallet:$IMAGE_TAG"
+          az webapp config container set --name "$APP_NAME" --resource-group "$RESOURCE_GROUP" --container-image-name "$SERVER/wallet:$IMAGE_TAG" --container-registry-url "https://$SERVER" --output none
+          az webapp restart --name "$APP_NAME" --resource-group "$RESOURCE_GROUP"
+      - name: Verify deployed application
+        run: |
+          HOST=$(az webapp show --name "$APP_NAME" --resource-group "$RESOURCE_GROUP" --query defaultHostName -o tsv)
+          for i in {1..60}; do
+            if curl -fsS "https://$HOST/health"; then
+              curl -fsS "https://$HOST/" | grep -q 'Moneda'
+              echo "Application: https://$HOST" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Deployment health check failed"; exit 1

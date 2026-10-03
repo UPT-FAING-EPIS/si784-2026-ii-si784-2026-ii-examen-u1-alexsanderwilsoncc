@@ -1,0 +1,46 @@
+name: Sonar analysis
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['docs/**', '**/*.md']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  sonar:
+    runs-on: ubuntu-latest
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+      SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Begin Sonar
+        if: env.SONAR_TOKEN != '' && env.SONAR_ORGANIZATION != '' && env.SONAR_PROJECT_KEY != ''
+        run: |
+          dotnet tool install --global dotnet-sonarscanner
+          dotnet sonarscanner begin /k:"$SONAR_PROJECT_KEY" /o:"$SONAR_ORGANIZATION" /d:sonar.host.url="https://sonarcloud.io" /d:sonar.token="$SONAR_TOKEN" /d:sonar.cs.opencover.reportsPaths="TestResults/**/coverage.opencover.xml" /d:sonar.exclusions="**/bin/**,**/obj/**,**/node_modules/**,**/dist/**" /d:sonar.coverage.exclusions="frontend/**,backend/Wallet.Docs/**" /d:sonar.scanner.scanAll=true
+      - run: dotnet restore backend/Wallet.sln
+      - run: dotnet build backend/Wallet.sln -c Release --no-restore --no-incremental
+      - run: dotnet test backend/Wallet.sln -c Release --no-build --settings backend/coverage.runsettings --collect "XPlat Code Coverage" --results-directory TestResults
+      - name: End Sonar
+        if: env.SONAR_TOKEN != '' && env.SONAR_ORGANIZATION != '' && env.SONAR_PROJECT_KEY != ''
+        run: dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
+      - name: Explain missing configuration
+        if: env.SONAR_TOKEN == '' || env.SONAR_ORGANIZATION == '' || env.SONAR_PROJECT_KEY == ''
+        run: echo "Sonar skipped. Configure SONAR_TOKEN, SONAR_ORGANIZATION and SONAR_PROJECT_KEY; build/tests still run." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sonar-coverage
+          path: TestResults/

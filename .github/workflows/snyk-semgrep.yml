@@ -1,0 +1,60 @@
+name: Snyk and Semgrep
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['docs/**', '**/*.md']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install semgrep
+      - run: semgrep scan --config p/security-audit --config p/secrets --error --json --output semgrep.json .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: semgrep-results
+          path: semgrep.json
+  snyk:
+    runs-on: ubuntu-latest
+    env:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: dotnet restore backend/Wallet.sln
+      - run: npm ci
+        working-directory: frontend
+      - run: docker build -t wallet-app:scan .
+      - name: Install Snyk
+        if: env.SNYK_TOKEN != ''
+        run: npm install --global snyk
+      - name: Snyk code
+        if: env.SNYK_TOKEN != ''
+        run: snyk code test --severity-threshold=high --json-file-output=snyk-code.json
+      - name: Snyk dependencies
+        if: always() && env.SNYK_TOKEN != ''
+        run: snyk test --all-projects --exclude=node_modules,bin,obj,Wallet.Docs --severity-threshold=high --json-file-output=snyk-dependencies.json
+      - name: Snyk container
+        if: always() && env.SNYK_TOKEN != ''
+        run: snyk container test wallet-app:scan --file=Dockerfile --severity-threshold=high --json-file-output=snyk-container.json
+      - name: Explain missing configuration
+        if: env.SNYK_TOKEN == ''
+        run: echo "Snyk skipped because SNYK_TOKEN is missing. Semgrep runs independently." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always() && env.SNYK_TOKEN != ''
+        with:
+          name: snyk-results
+          path: snyk-*.json
