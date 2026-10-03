@@ -98,11 +98,4 @@ Wallet.Docs lee los metadatos EF Core: propiedades, tipos relacionales, nulabili
 - [Componentes](docs/component-diagram.md)
 - [Despliegue](docs/deployment-diagram.md)
 
-## URLs y límites de esta entrega
 
-- Repositorio: https://github.com/UPT-FAING-EPIS/si784-2026-ii-si784-2026-ii-examen-u1-alexsanderwilsoncc
-- Publicación: commit local realizado en main; push bloqueado por credenciales Git ausentes y permiso de escritura de la integración GitHub (HTTP 403). El remoto permanece vacío hasta autenticar Git con acceso a este repositorio.
-- Aplicación pública: pendiente de credenciales Azure y ejecución de infra/deploy. No se inventa una URL.
-- Sonar: pendiente de SONAR_TOKEN, SONAR_ORGANIZATION y SONAR_PROJECT_KEY. La URL del proyecto será la entregada por SonarCloud al finalizar el análisis.
-
-Aplicación académica con fondos simulados y administración compartida de billeteras, sin autenticación individual. No usar con dinero real o datos personales de clientes. Para convertirla en producto se requieren autenticación/autorización por propietario, idempotencia, auditoría, conciliación y migraciones. SQLite y almacenamiento App Service se configuran para una sola instancia.
